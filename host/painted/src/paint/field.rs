@@ -726,12 +726,12 @@ impl Painter {
             let painted = material::FieldText::painted(&paragraph, (ox, oy), ts);
             self.row_field_text(node.id, material::Part::Value, painted);
         }
-        if let Some(shadows) = shadows {
+        if let Some(shadows) = &shadows {
             let ink = self.capture_field_ink(
                 walk.scene.kernel,
                 &paragraph,
                 &palette,
-                &shadows,
+                shadows,
                 walk.reveal,
             );
             self.paint_text_ink(
@@ -742,14 +742,13 @@ impl Painter {
                 None,
                 Some((text_clip, padding.rect)),
             );
-        } else {
-            self.backend.push_clip(&Shape::rect(text_clip), ts);
+        }
+        self.backend.push_clip(&Shape::rect(text_clip), ts);
+        if shadows.is_none() {
             let mut engine = self.text.borrow_mut();
             self.backend
                 .text(&mut engine, &paragraph, &palette, (ox, oy), ts);
-            self.backend.pop_clip();
         }
-        self.backend.push_clip(&Shape::rect(text_clip), ts);
         if let Some(composition) = &composition {
             let line = 1. / self.scale.max(1.);
             let mut underline = |start, end, dotted| {
