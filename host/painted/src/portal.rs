@@ -311,6 +311,8 @@ pub(crate) fn socket_of(address: &str) -> Option<Socket> {
 mod bus;
 #[cfg(unix)]
 pub(crate) use bus::choose;
+#[cfg(target_os = "linux")]
+pub(crate) use bus::gtk_cursor_settings;
 
 #[cfg(all(test, unix))]
 #[path = "portal_tests.rs"]

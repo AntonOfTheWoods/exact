@@ -155,6 +155,9 @@ and `bun host/web/dev.mjs --app messages --port 8767`.
 
 From a Wayland session, run the binary printed by `bun exact.mjs linux` to open a
 window. The compositor owns the display and sends the window its input.
+The text caret follows cursor-blink settings that desktops publish for GTK.
+Other sessions use a 1.2-second blink cycle and stop blinking after 10 idle seconds.
+
 `EXACT_SIZE` supplies the initial logical window size. Setting `EXACT_DRM` or
 requesting VNC selects the DRM/KMS console path. Agent runs are headless.
 

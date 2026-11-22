@@ -2,6 +2,7 @@
 //! surface. Winit dispatches window events while Exact waits on both the
 //! compositor and the presenter's worker descriptors.
 
+mod caret;
 mod input;
 
 use crate::event_loop::{poll, work_timeout, LocalPlan};
@@ -16,7 +17,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -63,6 +64,7 @@ struct Live<D: DataSource> {
     presented: bool,
     app_name: String,
     title: WindowTitle,
+    caret: caret::Blink,
 }
 
 impl<D: DataSource + Default> App<'_, D> {
@@ -96,6 +98,10 @@ impl<D: DataSource + Default> App<'_, D> {
                 live.window.request_redraw();
             }
             let due = live.presenter.turn_due_ms(now).map(|wait| now + wait);
+            let due = due
+                .into_iter()
+                .chain(live.caret.deadline(now))
+                .reduce(f64::min);
             let mut timeout = work_timeout(true, false, due, now);
             if self.local_plan.is_some() {
                 timeout = if timeout < 0 { 100 } else { timeout.min(100) };
@@ -158,6 +164,7 @@ impl<D: DataSource + Default> App<'_, D> {
             presented: false,
             app_name,
             title: WindowTitle::default(),
+            caret: caret::Blink::new(exact_painted::desktop::caret_blink_timing()),
         })
     }
 }
@@ -198,6 +205,9 @@ impl<D: DataSource + Default> ApplicationHandler for App<'_, D> {
                 live.window.request_redraw();
             }
             event => {
+                if caret_activity(&event) {
+                    live.caret.restart(now);
+                }
                 if let WindowEvent::Focused(focused) = &event {
                     live.presenter.update_foreground(*focused);
                 }
@@ -228,6 +238,7 @@ impl<D: DataSource + Default> Live<D> {
         }
         p.poll_images();
         p.poll_development(D::default);
+        self.caret.update(p, now);
         if self.title.update(p.host().runner()) {
             self.window.set_title(self.title.caption(&self.app_name));
         }
@@ -255,6 +266,7 @@ impl<D: DataSource + Default> Live<D> {
         if p.needs_animation_frame() {
             p.tick(now);
         }
+        self.caret.update(p, now);
         let frame = p.display_frame().ok_or("a frame is already pending")?;
         let pixels = frame.as_ref();
         if (pixels.width(), pixels.height()) != (size.width, size.height) {
@@ -280,6 +292,7 @@ impl<D: DataSource + Default> Live<D> {
         buffer.present().map_err(|error| error.to_string())?;
         p.display_complete(&frame);
         warn(p.display_presented(&frame, started.elapsed().as_secs_f64() * 1000.0));
+        self.caret.update(p, now);
         p.follow_pointer();
         if !self.presented {
             self.presented = true;
@@ -287,6 +300,24 @@ impl<D: DataSource + Default> Live<D> {
             println!("exact: Wayland window presented {width}x{height}");
         }
         Ok(())
+    }
+}
+
+fn caret_activity(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::KeyboardInput {
+            event,
+            is_synthetic: false,
+            ..
+        } => event.state.is_pressed(),
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        }
+        | WindowEvent::Focused(_)
+        | WindowEvent::Ime(Ime::Commit(_)) => true,
+        WindowEvent::Ime(Ime::Preedit(text, _)) => !text.is_empty(),
+        _ => false,
     }
 }
 

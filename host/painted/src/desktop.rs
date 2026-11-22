@@ -262,6 +262,32 @@ pub fn displays() -> Option<Rc<dyn Displays>> {
     DISPLAYS.with(|d| d.borrow().clone())
 }
 
+/// The desktop caret's full blink cycle and idle timeout. Missing settings
+/// use GTK's documented defaults.
+#[cfg(target_os = "linux")]
+pub fn caret_blink_timing() -> Option<(std::time::Duration, std::time::Duration)> {
+    use crate::portal::wire::Value;
+    use std::time::Duration;
+
+    let settings = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .ok()
+        .and_then(|address| crate::portal::gtk_cursor_settings(&address));
+    let setting = |key| settings.as_ref().and_then(|values| values.get(key));
+    if matches!(setting("cursor-blink"), Some(Value::Bool(false))) {
+        return None;
+    }
+    let nonnegative = |key, default| match setting(key) {
+        Some(Value::Num(value)) => u64::try_from(*value).unwrap_or(default),
+        _ => default,
+    };
+    let cycle = nonnegative("cursor-blink-time", 1200);
+    let timeout = nonnegative("cursor-blink-timeout", 10);
+    (cycle != 0 && timeout != 0).then_some((
+        Duration::from_millis(cycle.max(100)),
+        Duration::from_secs(timeout),
+    ))
+}
+
 /// A press the host heard, waiting for the presenter's turn.
 struct Activation {
     extension: &'static str,

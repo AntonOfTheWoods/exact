@@ -167,6 +167,24 @@ impl Bus {
     }
 }
 
+/// GTK's Wayland cursor preferences, when the session exports them.
+#[cfg(target_os = "linux")]
+pub(crate) fn gtk_cursor_settings(address: &str) -> Option<Value> {
+    let mut bus = Bus::connect(address, Duration::from_millis(30)).ok()?;
+    let namespace = "org.gnome.desktop.interface";
+    let args = [Value::Array("s".into(), vec![Value::str(namespace)])];
+    let values = bus
+        .call(
+            PORTAL,
+            PORTAL_PATH,
+            "org.freedesktop.portal.Settings",
+            "ReadAll",
+            &args,
+        )
+        .ok()?;
+    values.first()?.get(namespace).cloned()
+}
+
 /// Ask the portal at the session bus `address` for `picker`'s choice, and
 /// wait for it: the body of a pick's thread. `None`: no session bus.
 pub(crate) fn choose(
