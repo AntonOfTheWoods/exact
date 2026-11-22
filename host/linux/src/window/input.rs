@@ -331,6 +331,58 @@ mod tests {
         presenter
     }
 
+    #[test]
+    #[ignore = "requires a native GPU adapter; run explicitly in native validation"]
+    fn gpu_list_row_publishes_caret_geometry_in_the_viewport() {
+        exact_painted::app::show_neutral_look();
+        let plan = contract::compile(
+            r##"component App
+  state draft = ""
+  action edit(value: string)
+    draft = value
+  view
+    main display="flex" flex-direction="column" width="100%" height="100%" max-width="36rem" margin-left="auto" margin-right="auto" box-sizing="border-box" padding="1rem 0.5rem"
+      header appearance="none" display="flex" flex-wrap="wrap" align-items="baseline" column-gap="1rem" padding="0 1rem 0.75rem"
+        text "Todo" role="heading"
+      list appearance="auto" flex=1 min-height=0
+        section
+          row flex-wrap="wrap"
+            input testId="editor" value=draft input=edit flex="1 1 8rem" min-width=0 placeholder="New task"
+            button "Add" disabled=(draft == "")
+        section
+          row
+            text "No tasks yet."
+"##,
+        )
+        .unwrap();
+        let (mut p, error) = Presenter::boot_with(
+            &plan.encode(),
+            (),
+            (420., 796.8),
+            1.25,
+            Default::default(),
+            PainterChoice::Gpu,
+        )
+        .unwrap();
+        assert!(error.is_none(), "{error:?}");
+        p.frame();
+        let kernel = p.host().kernel();
+        let editor = kernel
+            .node_by_key(kernel.find_by_test_id("editor")[0])
+            .unwrap()
+            .id;
+        p.tap(editor).unwrap();
+        let frame = p.display_frame().unwrap();
+        assert!(p.display_complete(&frame));
+        p.display_presented(&frame, 0.);
+        let caret = p.caret_frame().expect("focused row has a caret");
+        let field = p
+            .ime_cursor_area()
+            .expect("focused row has an IME cursor area");
+        assert!(caret.1 > 60., "caret must be inside the row: {caret:?}");
+        assert_eq!(field, caret);
+    }
+
     fn view(presenter: &Presenter<()>, name: &str) -> u32 {
         let kernel = presenter.host().kernel();
         kernel

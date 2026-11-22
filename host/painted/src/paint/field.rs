@@ -23,6 +23,7 @@ pub(crate) struct Composition {
     pub(crate) unconverted: Vec<(u32, u32)>,
 }
 
+#[derive(Clone)]
 pub(crate) struct PaintedField {
     pub(crate) geometry: Rc<Geometry>,
     paragraph: Rc<Paragraph>,
