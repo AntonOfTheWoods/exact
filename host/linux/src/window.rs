@@ -189,6 +189,7 @@ impl<D: DataSource + Default> ApplicationHandler for App<'_, D> {
             }
             WindowEvent::Destroyed => events.exit(),
             WindowEvent::RedrawRequested => {
+                live.input.finish_ime_events(&mut live.presenter);
                 if let Err(error) = live.draw(self.started) {
                     self.error = Some(error);
                     events.exit();
@@ -216,6 +217,7 @@ impl<D: DataSource + Default> ApplicationHandler for App<'_, D> {
 
 impl<D: DataSource + Default> Live<D> {
     fn turn(&mut self, now: f64) {
+        self.input.finish_ime_events(&mut self.presenter);
         let p = &mut self.presenter;
         warn(p.pump(now));
         p.poll_update();
