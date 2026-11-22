@@ -100,6 +100,7 @@ impl<D: DataSource + Default> App<'_, D> {
             if self.local_plan.is_some() {
                 timeout = if timeout < 0 { 100 } else { timeout.min(100) };
             }
+            let timeout = live.input.repeat_poll_timeout(timeout);
             let p = &live.presenter;
             let mut fds = vec![display, p.executor_fd(), p.image_fd()];
             fds.extend(p.content_region_fd());

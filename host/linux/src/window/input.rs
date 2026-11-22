@@ -1,6 +1,7 @@
 //! Desktop input follows the painted presenter's pointer, keyboard and composition paths.
 use exact_painted::{presenter::ime::Target, presenter::PointerKind, Presenter};
 use exact_runner::DataSource;
+use std::collections::HashSet;
 use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
@@ -19,6 +20,7 @@ pub(super) struct Input {
     session: Option<Target>,
     composing: bool,
     ime_area: Option<(f32, f32, f32, f32)>,
+    held_keys: HashSet<PhysicalKey>,
 }
 
 impl Input {
@@ -40,6 +42,7 @@ impl Input {
                     self.composing = false;
                     self.session = None;
                     presenter.forget_pads();
+                    self.held_keys.clear();
                 }
                 presenter.set_window_active(focused);
                 presenter.surface_lifecycle(self.occluded, !focused);
@@ -136,6 +139,7 @@ impl Input {
                 is_synthetic,
                 ..
             } => {
+                self.track_key(event.physical_key, event.state.is_pressed(), is_synthetic);
                 self.previous_click = None;
                 let (code, key) = key_names(event.physical_key, &event.logical_key);
                 let down = event.state == ElementState::Pressed;
@@ -161,6 +165,27 @@ impl Input {
         }
         self.update_ime(presenter, window);
         Ok(())
+    }
+
+    fn track_key(&mut self, key: PhysicalKey, down: bool, synthetic: bool) {
+        if !down {
+            self.held_keys.remove(&key);
+        } else if !synthetic {
+            self.held_keys.insert(key);
+        }
+    }
+
+    pub(super) fn repeat_poll_timeout(&self, timeout: i32) -> i32 {
+        // Winit schedules compositor-configured repeats in calloop. Those
+        // deadlines do not wake its event-loop fd during our outer poll.
+        const REPEAT_PUMP_MS: i32 = 8;
+        if self.held_keys.is_empty() {
+            timeout
+        } else if timeout < 0 {
+            REPEAT_PUMP_MS
+        } else {
+            timeout.min(REPEAT_PUMP_MS)
+        }
     }
 
     pub(super) fn update_ime<D: DataSource>(
@@ -396,5 +421,46 @@ mod tests {
             .0
             .iter()
             .any(|node| node.view == submitted && node.name == "你好"));
+    }
+
+    #[test]
+    fn a_held_key_keeps_winit_repeat_timers_serviced_until_release() {
+        let mut input = Input::default();
+        let letter = PhysicalKey::Code(KeyCode::KeyD);
+        let backspace = PhysicalKey::Code(KeyCode::Backspace);
+        assert_eq!(input.repeat_poll_timeout(-1), -1);
+        input.track_key(letter, true, true);
+        assert_eq!(input.repeat_poll_timeout(-1), -1);
+        input.track_key(letter, true, false);
+        assert_eq!(input.repeat_poll_timeout(-1), 8);
+        assert_eq!(input.repeat_poll_timeout(2), 2);
+        assert_eq!(input.repeat_poll_timeout(30), 8);
+        input.track_key(backspace, true, false);
+        input.track_key(letter, false, false);
+        assert_eq!(input.repeat_poll_timeout(-1), 8);
+        input.track_key(backspace, false, false);
+        assert_eq!(input.repeat_poll_timeout(-1), -1);
+    }
+
+    #[test]
+    fn repeated_keys_insert_and_delete_text() {
+        let mut presenter = editor();
+        for repeat in [false, true, true, true, true] {
+            press(&mut presenter, "KeyD", "d", Some("d"), true, repeat);
+        }
+        press(&mut presenter, "KeyD", "d", None, false, false);
+        assert_eq!(value(&mut presenter), "ddddd");
+        for repeat in [false, true] {
+            press(&mut presenter, "Backspace", "Backspace", None, true, repeat);
+        }
+        press(&mut presenter, "Backspace", "Backspace", None, false, false);
+        assert_eq!(value(&mut presenter), "ddd");
+        press(&mut presenter, "Home", "Home", None, true, false);
+        press(&mut presenter, "Home", "Home", None, false, false);
+        for repeat in [false, true] {
+            press(&mut presenter, "Delete", "Delete", None, true, repeat);
+        }
+        press(&mut presenter, "Delete", "Delete", None, false, false);
+        assert_eq!(value(&mut presenter), "d");
     }
 }
