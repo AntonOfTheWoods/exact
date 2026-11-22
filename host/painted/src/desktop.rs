@@ -22,6 +22,14 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// Read the desktop session's light or dark preference. An unavailable
+/// preference leaves the choice to the host.
+#[cfg(target_os = "linux")]
+pub fn preferred_dark_appearance() -> Option<bool> {
+    let address = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok()?;
+    crate::portal::preferred_dark_appearance(&address)
+}
+
 /// Why a chord is not registered, in `@exact/global-shortcuts`' words.
 pub type Refusal = &'static str;
 

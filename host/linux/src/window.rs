@@ -20,7 +20,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::platform::wayland::WindowAttributesExtWayland;
-use winit::window::{Window, WindowId};
+use winit::window::{Theme, Window, WindowId};
 
 pub(super) fn run<D: DataSource + Default>(config: &mut Config, started: Instant) -> i32 {
     let mut app = App::<D> {
@@ -120,12 +120,15 @@ impl<D: DataSource + Default> App<'_, D> {
             .as_str()
             .unwrap_or(&id)
             .to_owned();
+        let dark = exact_painted::desktop::preferred_dark_appearance();
+        let theme = dark.map(|dark| if dark { Theme::Dark } else { Theme::Light });
         let window = Rc::new(
             events
                 .create_window(
                     Window::default_attributes()
                         .with_name(id, "")
                         .with_title(&app_name)
+                        .with_theme(theme)
                         .with_inner_size(LogicalSize::new(self.config.size.0, self.config.size.1)),
                 )
                 .map_err(|error| error.to_string())?,
@@ -138,6 +141,12 @@ impl<D: DataSource + Default> App<'_, D> {
         let scale = window.scale_factor() as f32;
         self.config.scale = scale;
         self.config.clock_started = Some(self.started);
+        if let Some(dark) = dark {
+            self.config
+                .preferences
+                .get_or_insert_with(Default::default)
+                .dark = dark;
+        }
         exact_runner::page::set_awaits_present(true);
         let (mut presenter, warning) = boot_presenter::<D>(
             self.config,
@@ -146,6 +155,9 @@ impl<D: DataSource + Default> App<'_, D> {
         warn(warning);
         presenter.presents_pictures(true);
         presenter.set_live_clock(Some(wall_since(self.started)));
+        if let Some(dark) = dark {
+            presenter.set_system_scheme(dark);
+        }
         let closed = self.closed.clone();
         presenter.set_window_closer(move || closed.set(true));
         window.request_redraw();

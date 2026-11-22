@@ -14,6 +14,37 @@ const FILE_CHOOSER: &str = "org.freedesktop.portal.FileChooser";
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 
+/// Read the standard XDG appearance preference from the session portal.
+#[cfg(target_os = "linux")]
+pub(crate) fn preferred_dark_appearance(address: &str) -> Option<bool> {
+    const SETTINGS: &str = "org.freedesktop.portal.Settings";
+    let mut bus = Bus::connect(address, Duration::from_millis(30)).ok()?;
+    let args = [
+        Value::str("org.freedesktop.appearance"),
+        Value::str("color-scheme"),
+    ];
+    let reply = match bus.call(PORTAL, PORTAL_PATH, SETTINGS, "ReadOne", &args) {
+        Err(error) if error.starts_with("org.freedesktop.DBus.Error.UnknownMethod") => {
+            // Version 1 exposes Read, whose reply adds a second variant layer.
+            bus.call(PORTAL, PORTAL_PATH, SETTINGS, "Read", &args)
+        }
+        result => result,
+    }
+    .ok()?;
+    let [Value::Variant(value)] = reply.as_slice() else {
+        return None;
+    };
+    let value = match value.as_ref() {
+        Value::Variant(inner) => inner.as_ref(),
+        value => value,
+    };
+    match value {
+        Value::U32(1) => Some(true),
+        Value::U32(2) => Some(false),
+        _ => None,
+    }
+}
+
 /// A connection to a message bus, authenticated and named.
 pub(crate) struct Bus {
     stream: UnixStream,

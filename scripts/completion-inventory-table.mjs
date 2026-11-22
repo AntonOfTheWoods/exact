@@ -874,6 +874,7 @@ export const classifications = [
     ["painted:host/painted/src/canvas/secrets.rs", "attach"],
     ["painted:host/painted/src/canvas/time.rs", "attach format"],
     ["painted:host/painted/src/com.rs", "ensure_mta ensure_sta"],
+    ["painted:host/painted/src/desktop.rs", "preferred_dark_appearance"],
     ["painted:host/painted/src/desktop.rs", "activate displays FullScreen::headless install install_displays services"],
     ["painted:host/painted/src/gpu.rs", "Gpu::new"],
     ["painted:host/painted/src/lib.rs", "set_event_waker"],
