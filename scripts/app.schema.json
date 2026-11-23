@@ -1365,6 +1365,34 @@
               "type": "string",
               "pattern": "^/(?:[A-Za-z0-9_~-]+(?:\\.[A-Za-z0-9_~-]+)*/)*$"
             },
+            "sqlite": {
+              "description": "Use an OPFS SyncAccessHandle pool for selected new browser SQLite databases. Keys are canonical app:/data/ paths. Each database still requires its sqlite.open grant.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^app:/data/(?!\\.{1,2}(?:/|$))[^/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)*$"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "required": ["vfs"],
+                "additionalProperties": false,
+                "properties": {
+                  "vfs": { "type": "string", "enum": ["opfs-sahpool"] },
+                  "journalMode": {
+                    "description": "The SQLite journal to use. WAL uses exclusive SQLite locking.",
+                    "type": "string",
+                    "enum": ["delete", "wal"],
+                    "default": "delete"
+                  },
+                  "synchronous": {
+                    "description": "SQLite's PRAGMA synchronous setting.",
+                    "type": "string",
+                    "enum": ["off", "normal", "full", "extra"],
+                    "default": "full"
+                  }
+                }
+              }
+            },
             "head": {
               "description": "Tags the web build writes into the <head> of every document: the shell, each pre-rendered page and the 404 page. Each entry is one tag, {\"script\": {...}}, {\"link\": {...}} or {\"meta\": {...}}, whose value is its attributes (a string, or true for a bare one such as async); a script's `text` is its content. For what a site says once to the browser (an analytics script, a preconnect, site-wide JSON-LD); a page's own title and metas are the Contract `head` element's. The same on every page and web only.",
               "type": "array",

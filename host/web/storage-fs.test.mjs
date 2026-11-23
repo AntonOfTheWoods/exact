@@ -124,3 +124,112 @@ test('known-folder paths refuse with NotSupportedError before browser app storag
   });
   expect(result).toEqual(Array(7).fill(['NotSupportedError', 'failed', 'NotSupportedError: well-known folders are unavailable on this host']));
 });
+
+test('OPFS SQLite reservations survive reopen and refuse file access or replacement', async () => {
+  const result = await inPage(async () => {
+    const { createFileStore } = await import('/storage-fs.js');
+    const path = 'app:/data/notes/notebook.db', parent = 'app:/data/notes';
+    let store = createFileStore('opfs-reserved');
+    try {
+      await store.mkdir(parent);
+      await Promise.all([store.claimOpfsDatabase(path), store.claimOpfsDatabase(path)]);
+      store.close();
+      store = createFileStore('opfs-reserved');
+      await store.claimOpfsDatabase(path);
+      await store.writeFile('app:/data/ordinary', new Uint8Array([7]));
+      await store.mkdir('app:/data/empty');
+      const blob = new Blob(['replacement']);
+      const replacements = [
+        ['readFile', () => store.readFile(path)],
+        ['blob', () => store.blob(path, '')],
+        ['stat', () => store.stat(path)],
+        ['realpath', () => store.realpath(path)],
+        ['writeFile', () => store.writeFile(path, new Uint8Array([1]))],
+        ['atomicWriteFile', () => store.atomicWriteFile(path, new Uint8Array([1]))],
+        ['atomicWriteOwnedFile', () => store.atomicWriteOwnedFile(path, new Uint8Array([1]).buffer)],
+        ['appendFile', () => store.appendFile(path, new Uint8Array([1]))],
+        ['putBlob', () => store.putBlob(path, blob)],
+        ['putBlobs', () => store.putBlobs([{ path: 'app:/data/partial', blob }, { path, blob }])],
+        ['mkdir', () => store.mkdir(path)],
+        ['mkdir-below', () => store.mkdir(path + '/child')],
+        ['rm', () => store.rm(path)],
+        ['rm-parent', () => store.rm(parent)],
+        ['rename-source', () => store.rename(path, 'app:/data/moved.db')],
+        ['rename-destination', () => store.rename('app:/data/ordinary', path)],
+        ['rename-parent', () => store.rename(parent, 'app:/data/moved')],
+        ['rename-onto-parent', () => store.rename('app:/data/empty', parent)],
+        ['copy-source', () => store.copyFile(path, 'app:/data/copy.db')],
+        ['copy-destination', () => store.copyFile('app:/data/ordinary', path)],
+      ];
+      const refused = [];
+      for (const [name, operation] of replacements) {
+        try { await operation(); refused.push([name, 'allowed']); }
+        catch (error) { refused.push([name, error.code, error.message.includes('OPFS SQLite database')]); }
+      }
+      const partial = await store.stat('app:/data/partial').then(() => 'exists', error => error.code);
+      await store.claimOpfsDatabase(path);
+      return { refused, partial, names: await store.readdir(parent),
+        ordinary: Array.from(new Uint8Array(await store.readFile('app:/data/ordinary'))) };
+    } finally { store.close(); }
+  });
+  expect(result.refused).toEqual([
+    'readFile', 'blob', 'stat', 'realpath', 'writeFile', 'atomicWriteFile', 'atomicWriteOwnedFile',
+    'appendFile', 'putBlob', 'putBlobs', 'mkdir', 'mkdir-below', 'rm', 'rm-parent',
+    'rename-source', 'rename-destination', 'rename-parent', 'rename-onto-parent', 'copy-source', 'copy-destination',
+  ].map(name => [name, 'unsupported', true]));
+  expect(result.partial).toBe('ENOENT');
+  expect(result.names).toEqual(['notebook.db']);
+  expect(result.ordinary).toEqual([7]);
+}, 60_000);
+
+test('claiming an OPFS SQLite filename preserves existing IndexedDB files and directories', async () => {
+  const result = await inPage(async () => {
+    const { createFileStore } = await import('/storage-fs.js');
+    const store = createFileStore('opfs-existing');
+    try {
+      await store.writeFile('app:/data/existing.db', new Uint8Array([3, 4]));
+      await store.mkdir('app:/data/directory.db');
+      const refused = [];
+      for (const path of ['app:/data/existing.db', 'app:/data/directory.db']) {
+        try { await store.claimOpfsDatabase(path); refused.push('allowed'); }
+        catch (error) { refused.push([error.code, error.message.includes('already exists in IndexedDB'),
+          error.message.includes('choose a new path')]); }
+      }
+      const missingParent = await store.claimOpfsDatabase('app:/data/missing/new.db').then(() => 'allowed', error => error.code);
+      const outsideData = await store.claimOpfsDatabase('app:/cache/new.db').then(() => 'allowed', error => error.code);
+      return { refused, missingParent, outsideData,
+        bytes: Array.from(new Uint8Array(await store.readFile('app:/data/existing.db'))),
+        directory: (await store.stat('app:/data/directory.db')).isDirectory,
+        names: await store.readdir('app:/data') };
+    } finally { store.close(); }
+  });
+  expect(result).toEqual({ refused: [['failed', true, true], ['failed', true, true]],
+    missingParent: 'ENOENT', outsideData: 'failed', bytes: [3, 4], directory: true,
+    names: ['directory.db', 'existing.db'] });
+}, 60_000);
+
+test('directory removal checks OPFS reservations without reading descendant file payloads', async () => {
+  const result = await inPage(async () => {
+    const { createFileStore } = await import('/storage-fs.js');
+    const store = createFileStore('remove-payloads');
+    const prototype = IDBObjectStore.prototype;
+    const get = prototype.get, getAll = prototype.getAll;
+    const reads = [];
+    try {
+      await store.mkdir('app:/data/large/nested');
+      await store.writeFile('app:/data/large/one', new Uint8Array(256 * 1024));
+      await store.writeFile('app:/data/large/nested/two', new Uint8Array(256 * 1024));
+      prototype.get = function (key) { reads.push(key); return get.call(this, key); };
+      prototype.getAll = function (...args) { throw new Error('directory removal read descendant values'); };
+      await store.rm('app:/data/large');
+      prototype.get = get;
+      prototype.getAll = getAll;
+      return { reads, names: await store.readdir('app:/data') };
+    } finally {
+      prototype.get = get;
+      prototype.getAll = getAll;
+      store.close();
+    }
+  });
+  expect(result).toEqual({ reads: ['app:/data'], names: [] });
+}, 60_000);

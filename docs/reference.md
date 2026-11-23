@@ -3152,6 +3152,34 @@ same browser origin, subject to browser storage retention and quota policies.
 An open database exclusively locks its file; conflicting opens or filesystem
 mutations return `Unavailable` with a busy message. Agent mode skips storage.
 
+**Browser SQLite in OPFS.** For a new database, set its browser storage in `app.json`.
+
+```json
+{
+  "host": {
+    "web": {
+      "sqlite": {
+        "app:/data/journal-opfs.db": {
+          "vfs": "opfs-sahpool",
+          "journalMode": "wal",
+          "synchronous": "normal"
+        }
+      }
+    }
+  }
+}
+```
+
+Grant `sqlite.open app:/data/journal-opfs.db` and open that path through `storage.sqlite`. This setting applies to
+the web build. It needs a browser with OPFS SyncAccessHandle support. Choose a fresh path because a path already
+held in IndexedDB is refused. The browser reserves the path for SQLite once it opts into OPFS. The name appears
+in its directory listing. Access its contents through SQLite, including any app-defined export. A file operation
+that would replace or move the database or remove its directory is refused.
+
+The journal defaults to `delete` and `synchronous` to `full`. `wal` uses SQLite's exclusive locking mode,
+with connections taking turns on the same path. `normal` in WAL mode can lose recent commits after a system
+crash or power failure. [SQLite synchronous settings](https://sqlite.org/pragma.html#pragma_synchronous)
+
 In `app.ts`, a storage refusal is an `Error` with `kind: 'Unavailable'`, a `code` and a
 `message`. The code is the same on every host; the message says more and may
 differ. Storage itself is unavailable: `'bake'` (the build compiles no answer

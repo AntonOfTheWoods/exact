@@ -35,7 +35,7 @@ import { copyGpuCache } from './gpu-cache.mjs';
 import { absent, analyze, planRules, rootOf, tokens as pageTokens, written } from './page-style.mjs';
 import { writers } from './writers.mjs';
 import { namesStream } from './stream-names.mjs';
-import { bundleHostModule, localImports, stageHostGlue, writeFalse } from './glue.mjs';
+import { bundleHostModule, configureStorageWorker, localImports, stageHostGlue, writeFalse } from './glue.mjs';
 import { gateAgent } from './agent-gate.mjs';
 import { contentName, contentNames } from './content-names.mjs';
 import { buildEditor, buildFlow, buildMarkdown, buildModule, buildMotion, moduleSourceDirs, undeclaredRustData, fresh, frameAnswer, frameFixture, frameURL, leafTaken, moduleGrants, webCompiler, inspectHooked, withInspectHooks, withoutDev, withRuntimeStamp, sizeWarning, entrySizeReport } from './module.mjs';
@@ -1091,7 +1091,9 @@ async function lazyModules(roots, omit = []) {
     const { name, source } = queue.shift();
     if (planned.has(name)) continue;
     if (!source) { planned.set(name, { bytes: null, names: [] }); continue; }
-    const from = resolve(root, source), code = name.endsWith('.js') || name.endsWith('.mjs') ? readFileSync(from, 'utf8') : null;
+    const from = resolve(root, source);
+    let code = name.endsWith('.js') || name.endsWith('.mjs') ? readFileSync(from, 'utf8') : null;
+    if (name === 'storage-worker.js') code = configureStorageWorker(code, manifest);
     // The adapters' own storage-environment.js names the app's development store, as the page's chunk does (above).
     // A package's file is no host file (`host: false`): the gate holds Exact's own code
     const bytes = code == null ? readFileSync(from) : within(from, gen) ? code

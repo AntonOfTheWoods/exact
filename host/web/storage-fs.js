@@ -7,6 +7,7 @@
 import { agentStorageRefusal, directories as roots, fileVersion, now, storageKey } from './storage-environment.js';
 import { coversPath, knownFolderPath } from './grant-admission.js';
 const rootPaths = Object.values(roots);
+const opfsGuardPrefix = 'sqlite-opfs:';
 // Calls from one host module retain invocation order. Web Locks queue
 // conflicts with a live SQLite handle or another tab, with a bounded wait.
 const mutationTails = new Map();
@@ -168,12 +169,14 @@ export function createFileStore(appId) {
     }
     return opening;
   }
-  async function run(write, operation, path, list, subtree) {
+  async function run(write, operation, path, list, subtree, allowOpfs = false) {
     const db = await open();
     if (closed) throw failure('storage was unloaded');
     return new Promise((resolve, reject) => {
       let transaction;
-      try { transaction = db.transaction('files', write ? 'readwrite' : 'readonly'); }
+      // Persist the ownership record before the separate OPFS store can accept writes.
+      try { transaction = allowOpfs ? db.transaction('files', 'readwrite', { durability: 'strict' })
+        : db.transaction('files', write ? 'readwrite' : 'readonly'); }
       catch (error) { reject(failure(error.message)); return; }
       const store = transaction.objectStore('files');
       let result;
@@ -184,7 +187,9 @@ export function createFileStore(appId) {
       const requests = [...new Set(Array.isArray(path) ? path : [path])].map(key => store.get(key));
       if (subtree) requests.push(store.getAll(descendants(subtree)));
       const keys = list ? [store.getKey(list), store.getAllKeys(descendants(list))] : [];
-      let pending = requests.length + keys.length;
+      // Reservation keys keep directory removal independent of file payload sizes.
+      const guards = write && list ? [store.getKey(opfsGuardPrefix + list), store.getAllKeys(descendants(opfsGuardPrefix + list), 1)] : [];
+      let pending = requests.length + keys.length + guards.length;
       const ready = () => {
         if (--pending) return;
         const values = requests.flatMap(request => request.result ?? []);
@@ -197,10 +202,16 @@ export function createFileStore(appId) {
           remove(path) { records.delete(path); store.delete(path); },
           touch(path) { const value = directory(records, path); this.put({ ...value, modifiedMs: now() }); },
         };
-        try { result = operation(records, changes, keys.flatMap(request => request.result ?? [])); }
+        try {
+          const guard = guards.flatMap(request => request.result ?? [])[0];
+          const reserved = !allowOpfs && (values.find(value => value.kind === 'sqlite-opfs')?.path
+            ?? guard?.slice(opfsGuardPrefix.length));
+          if (reserved) throw failure(`${reserved} is an OPFS SQLite database; open it with its configured SQLite VFS; storage.fs cannot access or replace it`, 'unsupported');
+          result = operation(records, changes, keys.flatMap(request => request.result ?? []));
+        }
         catch (cause) { error = cause; transaction.abort(); }
       };
-      for (const request of [...requests, ...keys]) request.onsuccess = ready;
+      for (const request of [...requests, ...keys, ...guards]) request.onsuccess = ready;
     });
   }
   async function write(path, data, append, owned = false) {
@@ -247,6 +258,21 @@ export function createFileStore(appId) {
   }
   return Object.freeze({
     directories: roots,
+    // Called with the database's path lock held. Its marker prevents a later
+    // configuration or file operation from creating a second copy in IndexedDB.
+    async claimOpfsDatabase(path) {
+      path = normalizePath(path);
+      if (!path.startsWith('app:/data/')) throw failure('OPFS SQLite needs a path below app:/data', 'failed');
+      return run(true, (records, changes) => {
+        directory(records, parentOf(path));
+        const previous = records.get(path);
+        if (previous && previous.kind !== 'sqlite-opfs') throw failure(`${path} already exists in IndexedDB; choose a new path for OPFS SQLite or explicitly export and import its data`, 'failed');
+        if (previous) return;
+        changes.put({ path: opfsGuardPrefix + path, kind: 'sqlite-opfs-guard' });
+        changes.put({ path, kind: 'sqlite-opfs', modifiedMs: now() });
+        changes.touch(parentOf(path));
+      }, [path, parentOf(path)], undefined, undefined, true);
+    },
     async readFile(path) {
       path = normalizePath(path);
       // IndexedDB already returns an independent structured clone for this read.

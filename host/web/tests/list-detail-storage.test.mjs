@@ -9,15 +9,19 @@ import { serveBuildTree } from '../serve.mjs';
 
 const root = resolve(import.meta.dir, '../../..'), engineTest = await engineTests(['chromium', 'firefox']);
 let dir, server, url;
-beforeAll(async () => {
-  dir = mkdtempSync(join(root, 'target/list-detail-storage-'));
+function buildFixture(dir, web = {}) {
   for (const file of ['app.contract', 'app.ts']) cpSync(join(root, 'docs/patterns/list-detail', file), join(dir, file));
-  writeFileSync(join(dir, 'app.json'), JSON.stringify({ name: 'Items', app: { id: 'test.exact.list-detail', name: 'Items' }, host: {}, deploy: {} }));
+  writeFileSync(join(dir, 'app.json'), JSON.stringify({ name: 'Items', app: { id: 'test.exact.list-detail', name: 'Items' }, host: { web }, deploy: {} }));
   const plan = join(dir, 'app.plan'), dist = join(dir, 'dist');
   const compile = spawnSync(join(process.env.CARGO_TARGET_DIR ?? join(root, 'target'), 'debug/contract'), ['build', join(dir, 'app.contract'), '-o', plan], { cwd: root, encoding: 'utf8' });
   expect(compile.status, compile.stderr).toBe(0);
   const build = spawnSync(process.execPath, ['host/web-js/build.mjs', 'items', '--plan', plan, '--out', dist, '--render', 'none'], { cwd: root, encoding: 'utf8', env: { ...process.env, EXACT_APP_DIR: dir } });
   expect(build.status, build.stdout + build.stderr).toBe(0);
+  return dist;
+}
+beforeAll(async () => {
+  dir = mkdtempSync(join(root, 'target/list-detail-storage-'));
+  const dist = buildFixture(dir);
   server = createServer((request, response) => serveBuildTree(dist, request, response));
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
   url = `http://127.0.0.1:${server.address().port}`;
@@ -28,8 +32,8 @@ const ask = (page, request) => page.evaluate(request => exact.agentSettled(reque
 async function settle(page) {
   expect(await ask(page, { op: 'clock', settle: true })).toMatchObject({ settled: true });
 }
-async function visit(page, path = '/') {
-  await page.goto(`${url}${path}?agent=1&storage=shared`);
+async function visit(page, path = '/', origin = url) {
+  await page.goto(`${origin}${path}?agent=1&storage=shared`);
   await page.waitForFunction(() => globalThis.exact?.agentSettled);
   await settle(page);
 }
@@ -87,3 +91,41 @@ for (const engine of ['chromium', 'firefox']) engineTest[engine](`list-detail pr
     expect((await items(a)).map(i => i.title.toLowerCase()).sort()).toEqual(['alpha', 'beta', 'delta', 'epsilon', 'same']);
   } finally { await context.close(); await browser.close(); }
 }, 60_000);
+
+engineTest.chromium('a manifest selects OPFS for a SQLite path in the built app (chromium)', async () => {
+  const opfsDir = mkdtempSync(join(root, 'target/list-detail-opfs-'));
+  let site, browser;
+  try {
+    const dist = buildFixture(opfsDir, {
+      sqlite: { 'app:/data/items.db': { vfs: 'opfs-sahpool', journalMode: 'wal', synchronous: 'normal' } },
+    });
+    site = createServer((request, response) => serveBuildTree(dist, request, response));
+    await new Promise(ok => site.listen(0, '127.0.0.1', ok));
+    const origin = `http://127.0.0.1:${site.address().port}`;
+    browser = await suiteBrowser('chromium');
+    const context = await browser.newContext();
+    const first = await context.newPage();
+    await visit(first, '/', origin);
+    await add(first, 'In the pool');
+    expect((await items(first)).map(item => item.title)).toEqual(['In the pool']);
+    await first.close();
+
+    const reopened = await context.newPage();
+    await visit(reopened, '/', origin);
+    expect((await items(reopened)).map(item => item.title)).toEqual(['In the pool']);
+    const pools = await reopened.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const directory = await root.getDirectoryHandle('exact-sqlite-sahpool');
+      const names = [];
+      for await (const name of directory.keys()) names.push(name);
+      return names;
+    });
+    expect(pools).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/)]);
+  } finally {
+    try { await browser?.close(); }
+    finally {
+      if (site) await new Promise(ok => site.close(ok));
+      rmSync(opfsDir, { recursive: true, force: true });
+    }
+  }
+}, 180_000);

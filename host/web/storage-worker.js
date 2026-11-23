@@ -2,9 +2,10 @@
 import sqlite3InitModule from './sqlite3.mjs';
 import { createFileStore, lockPaths } from './storage-fs.js';
 
-// No shared memory or isolation headers: keep the database in WASM memory and
-// atomically publish its complete SQLite file after each successful mutation.
-// This costs O(database size) per write; a connection exclusively locks its file.
+// The build writes the browser host's per-path SQLite policy here.
+const OPFS_DATABASES = null;
+// By default, atomically publish the complete SQLite file to IndexedDB after
+// each mutation. Configured OPFS databases let SQLite persist its own pages.
 const ready = sqlite3InitModule({ locateFile: file => file === 'sqlite3.wasm'
   ? new URL('./sqlite3.wasm', import.meta.url).href : new URL(file, import.meta.url).href });
 const clients = new Map();
@@ -211,9 +212,17 @@ async function close(databases, id) {
   const session = databases.get(id);
   if (!session) return;
   databases.delete(id);
-  try { session.db.close(); } finally { session.files.close(); await session.release(); }
+  await releaseSession(session);
+}
+async function releaseSession(session) {
+  try { session.db?.close(); }
+  finally {
+    try { session.pool?.pauseVfs(); }
+    finally { session.files.close(); await session.release(); }
+  }
 }
 async function persist(sqlite, databases, id, session) {
+  if (session.pool) return;
   try {
     let bytes;
     session.serializing = true;
@@ -235,21 +244,54 @@ async function persist(sqlite, databases, id, session) {
   }
 }
 
+async function openOpfs(sqlite, session, appId, options) {
+  if (!globalThis.FileSystemHandle || !globalThis.FileSystemDirectoryHandle
+    || !globalThis.FileSystemFileHandle?.prototype.createSyncAccessHandle
+    || !navigator.storage?.getDirectory || !crypto.subtle) {
+    fail('opfs-sahpool is unavailable in this browser; use a secure origin with OPFS support');
+  }
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([appId, session.path])));
+  const name = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  await navigator.storage.getDirectory();
+  await session.files.claimOpfsDatabase(session.path);
+  session.pool = await sqlite.installOpfsSAHPoolVfs({
+    name: `opfs-sahpool-${name}`,
+    directory: `exact-sqlite-sahpool/${name}`,
+    preserveOnInitFailure: true,
+  });
+  if (session.pool.isPaused()) await session.pool.unpauseVfs();
+  const db = session.db = new session.pool.OpfsSAHPoolDb('/main.sqlite');
+  // An existing WAL database must acquire its exclusive lock before any read,
+  // including the read needed to switch back to a rollback journal.
+  db.exec('PRAGMA locking_mode=EXCLUSIVE');
+  const journalMode = options.journalMode ?? 'delete';
+  if (db.selectValue(`PRAGMA journal_mode=${journalMode}`) !== journalMode) {
+    fail(`could not set SQLite journal mode to ${journalMode}`);
+  }
+  if (journalMode === 'delete') db.exec('PRAGMA locking_mode=NORMAL');
+  db.exec(`PRAGMA synchronous=${options.synchronous ?? 'full'}`);
+}
+
 async function dispatch(owner, { appId, op, args }) {
   const { databases } = owner;
   const sqlite = await ready;
   if (op === 'open') {
     const path = args[0], release = await lockPaths(appId, [path], undefined, undefined, owner.gone.signal);
     const files = createFileStore(appId);
-    const session = { path, release, files, db: new sqlite.oo1.DB(':memory:'), statements: new Map(), internal: false };
+    const session = { path, release, files, db: null, statements: new Map(), internal: false };
     try {
       let bytes;
-      try { bytes = new Uint8Array(await files.readFile(path)); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (bytes?.length) {
-        const pointer = sqlite.wasm.allocFromTypedArray(bytes);
-        session.db.checkRc(sqlite.capi.sqlite3_deserialize(session.db.pointer, 'main', pointer,
-          BigInt(bytes.length), BigInt(bytes.length), sqlite.capi.SQLITE_DESERIALIZE_FREEONCLOSE | sqlite.capi.SQLITE_DESERIALIZE_RESIZEABLE));
+      const options = OPFS_DATABASES?.[path];
+      if (options) await openOpfs(sqlite, session, appId, options);
+      else {
+        session.db = new sqlite.oo1.DB(':memory:');
+        try { bytes = new Uint8Array(await files.readFile(path)); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (bytes?.length) {
+          const pointer = sqlite.wasm.allocFromTypedArray(bytes);
+          session.db.checkRc(sqlite.capi.sqlite3_deserialize(session.db.pointer, 'main', pointer,
+            BigInt(bytes.length), BigInt(bytes.length), sqlite.capi.SQLITE_DESERIALIZE_FREEONCLOSE | sqlite.capi.SQLITE_DESERIALIZE_RESIZEABLE));
+        }
       }
       configure(sqlite, session);
       const id = ++owner.nextDatabase;
@@ -258,7 +300,7 @@ async function dispatch(owner, { appId, op, args }) {
       return id;
     } catch (error) {
       for (const [id, candidate] of databases) if (candidate === session) databases.delete(id);
-      session.db.close(); files.close(); await release(); throw error;
+      await releaseSession(session); throw error;
     }
   }
   const [id, ...rest] = args;

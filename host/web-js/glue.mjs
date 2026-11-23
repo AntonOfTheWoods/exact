@@ -63,6 +63,14 @@ export const localImports = text => text
   .replaceAll("'../web/address-space.js'", "'./address-space.js'")
   .replaceAll('"../web/address-space.js"', '"./address-space.js"');
 
+export function configureStorageWorker(code, manifest) {
+  const databases = manifest.host?.web?.sqlite;
+  if (!databases || !Object.keys(databases).length) return code;
+  const declaration = 'const OPFS_DATABASES = null;';
+  if (!code.includes(declaration)) throw new Error('The SQLite worker is missing its OPFS database declaration');
+  return code.replace(declaration, () => 'const OPFS_DATABASES = ' + JSON.stringify(databases) + ';');
+}
+
 // @ref LLP 1043.000 §3 D7/D8 — one inventory for host builds, serving and fixtures.
 // Groups preserve capability-based shipping; none of these imports enters boot.
 // A group's files import statically only from it or base (web-host-groups.test.mjs): base's documents-glue.js
